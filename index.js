@@ -51,55 +51,63 @@ Promise.all([
 
 // Multer config
 const storage = multer.diskStorage({
-  destination: './uploads/',
-  filename: (_, file, cb) => {
-    const uniqueName = `${Date.now()}-${file.originalname}`;
-    cb(null, uniqueName);
-  },
-});
-const upload = multer({ storage });
+    destination: function (req, file, cb) {
+      const uploadPath = path.join(__dirname, 'uploads');
+      if (!fs.existsSync(uploadPath)) {
+        fs.mkdirSync(uploadPath);
+      }
+      cb(null, uploadPath);
+    },
+    filename: function (req, file, cb) {
+      const uniqueName = `${Date.now()}-${file.originalname}`;
+      cb(null, uniqueName);
+    }
+  });
+  const upload = multer({ storage });
 
 // ✅ API to register face
 app.post('/register-face', upload.single('image'), async (req, res) => {
-  const empId = req.body.empId;
-
-  if (!req.file || !empId) {
-    return res.status(400).json({ error: 'Missing image or empId' });
-  }
-
-  const imgPath = path.join(__dirname, 'uploads', req.file.filename);
-  const img = await canvas.loadImage(imgPath);
-
-  const detections = await faceapi
-    .detectSingleFace(img)
-    .withFaceLandmarks()
-    .withFaceDescriptor();
-
-  if (!detections) {
-    return res.status(404).json({ error: 'No face detected' });
-  }
-
-  // Save descriptor as JSON
-  const descriptor = Array.from(detections.descriptor);
-  const faceId = `FACE_${Date.now()}`;
-  const descriptorPath = path.join(__dirname, 'face-descriptors', `${faceId}.json`);
-  fs.writeFileSync(descriptorPath, JSON.stringify({ descriptor, empId }));
-
-  // Save to DB
-  const sql = `INSERT INTO TBL_EMP_BIOMETRIC_INFO (EMP_SYS_ID, FACE_ID) VALUES (?, ?)`;
-  db.query(sql, [empId, faceId], (err, result) => {
-    if (err) {
-      console.error('❌ DB insert error:', err);
-      return res.status(500).json({ message: 'Insert failed' });
+    const empId = req.body.empId;
+  
+    if (!req.file || !empId) {
+      return res.status(400).json({ error: 'Missing image or empId' });
     }
-
-    res.json({
-      message: '✅ Face registered successfully',
-      faceId,
-      dbId: result.insertId,
-    });
+  
+    const imgPath = path.join(__dirname, 'uploads', req.file.filename);
+    console.log('🖼️ Uploaded file path:', imgPath);
+  
+    try {
+      const img = await canvas.loadImage(imgPath);
+      const detections = await faceapi
+        .detectSingleFace(img)
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+  
+      if (!detections) {
+        return res.status(404).json({ error: 'No face detected' });
+      }
+  
+      // ✅ Save descriptor as JSON
+      const descriptor = Array.from(detections.descriptor);
+      const faceId = `FACE_${Date.now()}`;
+      const descriptorPath = path.join(__dirname, 'face-descriptors', `${faceId}.json`);
+      fs.writeFileSync(descriptorPath, JSON.stringify({ descriptor, empId }));
+  
+      // ✅ Save to DB (example SQL)
+      const sql = 'INSERT INTO TBL_EMP_BIOMETRIC_INFO (EMP_SYS_ID, FACE_ID) VALUES (?, ?)';
+      db.run(sql, [empId, faceId], (err) => {
+        if (err) {
+          return res.status(500).json({ error: 'Database error', details: err });
+        }
+  
+        res.status(200).json({ message: 'Face registered successfully', faceId });
+      });
+  
+    } catch (err) {
+      console.error('❌ Error in face registration:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
   });
-});
 // ✅ API to verify face
 app.post('/verify-face', upload.single('image'), async (req, res) => {
     const empId = req.body.empId;
