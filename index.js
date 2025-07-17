@@ -100,6 +100,64 @@ app.post('/register-face', upload.single('image'), async (req, res) => {
     });
   });
 });
+// ✅ API to verify face
+app.post('/verify-face', upload.single('image'), async (req, res) => {
+    const empId = req.body.empId;
+  
+    if (!req.file || !empId) {
+      return res.status(400).json({ error: 'Missing image or empId' });
+    }
+  
+    const imgPath = path.join(__dirname, 'uploads', req.file.filename);
+    const img = await canvas.loadImage(imgPath);
+  
+    const uploadedDetection = await faceapi
+      .detectSingleFace(img)
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+  
+    if (!uploadedDetection) {
+      return res.status(404).json({ error: 'No face detected in uploaded image' });
+    }
+  
+    // Read stored face descriptors
+    const descriptorDir = path.join(__dirname, 'face-descriptors');
+    const descriptorFiles = fs.readdirSync(descriptorDir);
+  
+    let matchFound = false;
+    let bestDistance = Infinity;
+  
+    for (const file of descriptorFiles) {
+      const data = JSON.parse(fs.readFileSync(path.join(descriptorDir, file)));
+      if (data.empId !== empId) continue;
+  
+      const storedDescriptor = new Float32Array(data.descriptor);
+      const distance = faceapi.euclideanDistance(uploadedDetection.descriptor, storedDescriptor);
+  
+      if (distance < 0.6) { // 0.6 is threshold for match
+        matchFound = true;
+        bestDistance = distance;
+        break;
+      } else {
+        bestDistance = Math.min(bestDistance, distance);
+      }
+    }
+  
+    if (matchFound) {
+      res.json({
+        verified: true,
+        message: '✅ Face matched',
+        distance: bestDistance.toFixed(4),
+      });
+    } else {
+      res.json({
+        verified: false,
+        message: '❌ Face did not match',
+        distance: bestDistance.toFixed(4),
+      });
+    }
+  });
+  
 
 // Test
 app.get('/', (req, res) => {
