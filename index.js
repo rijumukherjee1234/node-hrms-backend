@@ -5,12 +5,9 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
-
-// Face recognition packages
 const faceapi = require('@vladmandic/face-api');
 const canvas = require('canvas');
 
-// For face-api.js environment
 const { Canvas, Image, ImageData } = canvas;
 faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
 
@@ -20,12 +17,11 @@ const port = 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
-// Create folders if not exists
 ['uploads', 'face-descriptors'].forEach(folder => {
   if (!fs.existsSync(folder)) fs.mkdirSync(folder);
 });
 
-// DB connection
+// ✅ Direct DB config (no .env)
 const db = mysql.createConnection({
   host: 'tangent-rds-mysql.coqrofbynn8g.ap-south-1.rds.amazonaws.com',
   port: 3306,
@@ -33,145 +29,147 @@ const db = mysql.createConnection({
   password: '7600c880%%155f&&02a9**f5473b5e',
   database: 'DEV_HR_MANAGEMENT'
 });
-
-db.connect((err) => {
+db.connect(err => {
   if (err) console.error('❌ DB Error:', err);
   else console.log('✅ Connected to DB');
 });
 
-// Load face-api models
-const MODEL_PATH = path.join(__dirname, 'models');
-Promise.all([
-  faceapi.nets.ssdMobilenetv1.loadFromDisk(MODEL_PATH),
-  faceapi.nets.faceRecognitionNet.loadFromDisk(MODEL_PATH),
-  faceapi.nets.faceLandmark68Net.loadFromDisk(MODEL_PATH),
-]).then(() => {
-  console.log('✅ FaceAPI models loaded');
-});
+// ✅ Load models before server starts
+(async () => {
+  const MODEL_PATH = path.join(__dirname, 'models');
 
-// Multer config
+  await Promise.all([
+    faceapi.nets.tinyFaceDetector.loadFromDisk(path.join(MODEL_PATH, 'tiny_face_detector_model')),
+    faceapi.nets.faceLandmark68Net.loadFromDisk(path.join(MODEL_PATH, 'face_landmark_68_model')),
+    faceapi.nets.faceRecognitionNet.loadFromDisk(path.join(MODEL_PATH, 'face_recognition_model')),
+  ]);
+  
+ 
+  console.log('✅ Models loaded. Starting server...');
+  app.listen(port, () => console.log(`🚀 Server running at http://localhost:${port}`));
+})();
+
+// ✅ File Uploads (multer)
 const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-      const uploadPath = path.join(__dirname, 'uploads');
-      if (!fs.existsSync(uploadPath)) {
-        fs.mkdirSync(uploadPath);
-      }
-      cb(null, uploadPath);
-    },
-    filename: function (req, file, cb) {
-      const uniqueName = `${Date.now()}-${file.originalname}`;
-      cb(null, uniqueName);
-    }
-  });
-  const upload = multer({ storage });
+  destination: (req, file, cb) => cb(null, 'uploads/'),
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+});
+const upload = multer({ storage });
 
-// ✅ API to register face
-app.post('/register-face', upload.single('image'), async (req, res) => {
-    const empId = req.body.empId;
-  
-    if (!req.file || !empId) {
-      return res.status(400).json({ error: 'Missing image or empId' });
-    }
-  
-    const imgPath = path.join(__dirname, 'uploads', req.file.filename);
-    console.log('🖼️ Uploaded file path:', imgPath);
-  
-    try {
-      const img = await canvas.loadImage(imgPath);
-      const detections = await faceapi
-        .detectSingleFace(img)
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-  
-      if (!detections) {
-        return res.status(404).json({ error: 'No face detected' });
-      }
-  
-      // ✅ Save descriptor as JSON
-      const descriptor = Array.from(detections.descriptor);
-      const faceId = `FACE_${Date.now()}`;
-      const descriptorPath = path.join(__dirname, 'face-descriptors', `${faceId}.json`);
-      fs.writeFileSync(descriptorPath, JSON.stringify({ descriptor, empId }));
-  
-      // ✅ Save to DB (example SQL)
-      const sql = 'INSERT INTO TBL_EMP_BIOMETRIC_INFO (EMP_SYS_ID, FACE_ID) VALUES (?, ?)';
-      db.run(sql, [empId, faceId], (err) => {
-        if (err) {
-          return res.status(500).json({ error: 'Database error', details: err });
-        }
-  
-        res.status(200).json({ message: 'Face registered successfully', faceId });
-      });
-  
-    } catch (err) {
-      console.error('❌ Error in face registration:', err);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  });
-// ✅ API to verify face
-app.post('/verify-face', upload.single('image'), async (req, res) => {
-    const empId = req.body.empId;
-  
-    if (!req.file || !empId) {
-      return res.status(400).json({ error: 'Missing image or empId' });
-    }
-  
-    const imgPath = path.join(__dirname, 'uploads', req.file.filename);
-    const img = await canvas.loadImage(imgPath);
-  
-    const uploadedDetection = await faceapi
-      .detectSingleFace(img)
+// ✅ Safe face descriptor function
+async function getSafeFaceDescriptor(imagePath) {
+  try {
+    const img = await canvas.loadImage(imagePath);
+    const c = canvas.createCanvas(img.width, img.height);
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+
+    const detection = await faceapi
+      .detectSingleFace(c, new faceapi.TinyFaceDetectorOptions())
       .withFaceLandmarks()
       .withFaceDescriptor();
-  
-    if (!uploadedDetection) {
-      return res.status(404).json({ error: 'No face detected in uploaded image' });
+
+    if (!detection || !detection.descriptor) {
+      console.warn('⚠️ No face or descriptor found.');
+      return null;
     }
-  
-    // Read stored face descriptors
-    const descriptorDir = path.join(__dirname, 'face-descriptors');
-    const descriptorFiles = fs.readdirSync(descriptorDir);
-  
-    let matchFound = false;
-    let bestDistance = Infinity;
-  
-    for (const file of descriptorFiles) {
-      const data = JSON.parse(fs.readFileSync(path.join(descriptorDir, file)));
-      if (data.empId !== empId) continue;
-  
-      const storedDescriptor = new Float32Array(data.descriptor);
-      const distance = faceapi.euclideanDistance(uploadedDetection.descriptor, storedDescriptor);
-  
-      if (distance < 0.6) { // 0.6 is threshold for match
-        matchFound = true;
-        bestDistance = distance;
-        break;
-      } else {
-        bestDistance = Math.min(bestDistance, distance);
+
+    const descriptor = detection.descriptor;
+    if (
+      descriptor.length !== 128 ||
+      descriptor.some(v => typeof v !== 'number' || isNaN(v))
+    ) {
+      console.warn('⚠️ Descriptor invalid or contains NaNs');
+      return null;
+    }
+
+    return descriptor;
+  } catch (err) {
+    console.error('❌ getSafeFaceDescriptor error:', err.message);
+    return null;
+  }
+}
+
+// ✅ Register Face
+app.post('/register-face', upload.single('image'), async (req, res) => {
+  const { empId } = req.body;
+  if (!req.file || !empId) return res.status(400).json({ error: 'Missing image or empId' });
+
+  const imgPath = req.file.path;
+  try {
+    const descriptor = await getSafeFaceDescriptor(imgPath);
+    if (!descriptor) return res.status(404).json({ error: 'No face detected or descriptor invalid' });
+console.log(descriptor,"descriptor");
+
+    const array = Array.from(descriptor);
+    const faceId = `FACE_${Date.now()}`;
+    fs.writeFileSync(path.join('face-descriptors', `${faceId}.json`),
+      JSON.stringify({ empId, descriptor: array }, null, 2)
+    );
+
+    db.query(
+      'INSERT INTO TBL_EMP_BIOMETRIC_INFO (EMP_SYS_ID, FACE_ID) VALUES (?, ?)',
+      [empId, faceId],
+      (err, results) => {
+        if (err) {
+          console.error('❌ DB Insert Error:', err);
+          return res.status(500).json({ error: 'DB error', details: err.message });
+        }
+        res.json({ message: '✅ Face registered', faceId });
       }
-    }
-  
-    if (matchFound) {
-      res.json({
-        verified: true,
-        message: '✅ Face matched',
-        distance: bestDistance.toFixed(4),
-      });
-    } else {
-      res.json({
-        verified: false,
-        message: '❌ Face did not match',
-        distance: bestDistance.toFixed(4),
-      });
-    }
-  });
-  
-
-// Test
-app.get('/', (req, res) => {
-  res.send('👋 Face Recognition Server is up!');
+    );
+  } catch (err) {
+    console.error('❌ Register error:', err);
+    res.status(500).json({ error: 'Internal error', details: err.message });
+  } finally {
+    fs.unlink(imgPath, () => {});
+  }
 });
 
-app.listen(port, () => {
-  console.log(`🚀 Server running at http://localhost:${port}`);
+// ✅ Verify Face
+// ✅ Verify Face using empId
+app.post('/verify-face', upload.single('image'), async (req, res) => {
+  const { empId } = req.body;
+  if (!req.file || !empId) return res.status(400).json({ error: 'Missing image or empId' });
+
+  const imgPath = req.file.path;
+
+  try {
+    // 1️⃣ Get faceId from DB
+    db.query(
+      'SELECT FACE_ID FROM TBL_EMP_BIOMETRIC_INFO WHERE EMP_SYS_ID = ?',
+      [empId],
+      async (err, results) => {
+        if (err || results.length === 0) {
+          console.error('❌ DB lookup error or empId not found');
+          return res.status(404).json({ error: 'empId not found or DB error' });
+        }
+
+        const faceId = results[0].FACE_ID;
+        const descriptor = await getSafeFaceDescriptor(imgPath);
+        if (!descriptor) return res.status(404).json({ error: 'No face detected or descriptor invalid' });
+
+        const stored = JSON.parse(fs.readFileSync(path.join('face-descriptors', `${faceId}.json`)));
+        const savedDescriptor = new Float32Array(stored.descriptor);
+        const distance = faceapi.euclideanDistance(descriptor, savedDescriptor);
+        const verified = distance < 0.6;
+
+        res.json({
+          verified,
+          message: verified ? '✅ Face matched!' : '❌ Face did not match',
+          distance: Number(distance.toFixed(4)),
+        });
+      }
+    );
+  } catch (err) {
+    console.error('❌ Verify error:', err);
+    res.status(500).json({ error: 'Internal error', details: err.message });
+  } finally {
+    fs.unlink(imgPath, () => {});
+  }
 });
+
+
+
+// ✅ Health Check
+app.get('/', (req, res) => res.send('👋 Face Recognition Server is up!'));
