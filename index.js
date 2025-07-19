@@ -89,7 +89,7 @@ app.post('/register-face', upload.single('image'), async (req, res) => {
   const imgPath = req.file.path;
   try {
     const descriptor = await getSafeFaceDescriptor(imgPath);
-    if (!descriptor) return res.status(404).json({ error: 'No face detected or descriptor invalid' });
+    // if (!descriptor) return res.status(404).json({ error: 'No face detected or descriptor invalid' });
 
     const array = Array.from(descriptor);
     const faceId = `FACE_${Date.now()}`;
@@ -159,6 +159,46 @@ app.post('/compare-face', upload.single('newImage'), async (req, res) => {
     res.status(500).json({ error: 'Compare error', details: err.message });
   }
 });
+//get for face
+
+
+app.get('/face-list', (req, res) => {
+  const empId = req.query.empId;
+  if (!empId) return res.status(400).json({ error: 'Missing empId in query' });
+
+  const descriptorDir = path.join(__dirname, 'face-descriptors');
+
+  fs.readdir(descriptorDir, (err, files) => {
+    if (err) {
+      return res.status(500).json({ error: 'Unable to read face-descriptors folder' });
+    }
+
+    const matchedFaces = [];
+
+    files.forEach((file) => {
+      const filePath = path.join(descriptorDir, file);
+      try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const jsonData = JSON.parse(content);
+        if (jsonData.empId === empId) {
+          matchedFaces.push({
+            faceId: file.replace('.json', ''),
+            descriptorLength: jsonData.descriptor.length
+          });
+        }
+      } catch (err) {
+        console.warn(`Invalid file: ${file}`);
+      }
+    });
+
+    res.json({
+      empId,
+      count: matchedFaces.length,
+      faces: matchedFaces
+    });
+  });
+});
+
 
 // ✅ Home route
 app.get('/', (req, res) => res.send('Face Comparison Server is running'));
