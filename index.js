@@ -176,38 +176,26 @@ app.get('/face-list', (req, res) => {
   const empId = req.query.empId;
   if (!empId) return res.status(400).json({ error: 'Missing empId in query' });
 
-  const descriptorDir = path.join(__dirname, 'face-descriptors');
+  db.query(
+    'SELECT FACE_ID, FACE_DESCRIPTOR FROM TBL_EMP_BIOMETRIC_INFO WHERE EMP_SYS_ID = ?',
+    [empId],
+    (err, results) => {
+      if (err) return res.status(500).json({ error: 'DB error', details: err.message });
 
-  fs.readdir(descriptorDir, (err, files) => {
-    if (err) {
-      return res.status(500).json({ error: 'Unable to read face-descriptors folder' });
+      const faces = results.map(row => ({
+        faceId: row.FACE_ID,
+        descriptorLength: JSON.parse(row.FACE_DESCRIPTOR).length
+      }));
+
+      res.json({
+        empId,
+        count: faces.length,
+        faces
+      });
     }
-
-    const matchedFaces = [];
-
-    files.forEach((file) => {
-      const filePath = path.join(descriptorDir, file);
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const jsonData = JSON.parse(content);
-        if (jsonData.empId === empId) {
-          matchedFaces.push({
-            faceId: file.replace('.json', ''),
-            descriptorLength: jsonData.descriptor.length
-          });
-        }
-      } catch (err) {
-        console.warn(`Invalid file: ${file}`);
-      }
-    });
-
-    res.json({
-      empId,
-      count: matchedFaces.length,
-      faces: matchedFaces
-    });
-  });
+  );
 });
+
 
 
 // ✅ Home route
