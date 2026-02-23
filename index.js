@@ -1,4 +1,5 @@
 const express = require('express');
+require('dotenv').config();
 const mysql = require('mysql2');
 const multer = require('multer');
 const cors = require('cors');
@@ -8,6 +9,7 @@ const path = require('path');
 const faceapi = require('@vladmandic/face-api');
 const canvas = require('canvas');
 const { log } = require('@tensorflow/tfjs-node');
+
 
 const { Canvas, Image, ImageData } = canvas;
 faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
@@ -26,11 +28,10 @@ app.use(express.urlencoded({ extended: true }));
 
 // MySQL DB
 const db = mysql.createConnection({
-  host: 'tangent-rds-mysql.coqrofbynn8g.ap-south-1.rds.amazonaws.com',
-  port: 3306,
-  user: 'DEV_HR_MANAGEMENT_DBUSER',
-  password: '7600c880%%155f&&02a9**f5473b5e',
-  database: 'DEV_HR_MANAGEMENT'
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME
 });
 db.connect(err => {
   if (err) console.error('DB Error:', err);
